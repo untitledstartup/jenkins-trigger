@@ -50,7 +50,7 @@ async function triggerJenkinsJob(jobName, params) {
   );
 }
 
-async function getJobStatus(jobName, statusUrl) {
+async function getJobStatus(statusUrl) {
   if (!statusUrl.endsWith('/'))
     statusUrl += '/';
 
@@ -74,31 +74,36 @@ async function getJobStatus(jobName, statusUrl) {
 }
 
 // see https://issues.jenkins.io/browse/JENKINS-12827
-async function waitJenkinsJob(jobName, queueItemUrl, timestamp) {
+async function waitJenkinsBuildUrl(jobName, queueItemUrl) {
   const sleepInterval = 5;
   let buildUrl = undefined
   core.info(`>>> Waiting for '${jobName}' ...`);
-  while (true) {
-    // check the queue until the job is assigned a build number
-    if (!buildUrl) {
-      let queueData = await getJobStatus(jobName, queueItemUrl);
 
-      if (queueData.cancelled)
-        throw new Error(`Job '${jobName}' was cancelled.`);
+  // check the queue until the job is assigned a build number
+  while (!buildUrl) {
+    let queueData = await getJobStatus(queueItemUrl);
 
-      if (queueData.executable && queueData.executable.url) {
-        buildUrl = queueData.executable.url; 
-        core.info(`>>> Job '${jobName}' started executing. BuildUrl=${buildUrl}`);
-      }
+    if (queueData.cancelled)
+      throw new Error(`Job '${jobName}' was cancelled.`);
 
-      if (!buildUrl) {
-        core.info(`>>> Job '${jobName}' is queued (Reason: '${queueData.why}'). Sleeping for ${sleepInterval}s...`);
-        await sleep(sleepInterval);
-        continue;
-      }
+    if (queueData.executable && queueData.executable.url) {
+      buildUrl = queueData.executable.url; 
+      core.info(`>>> Job '${jobName}' started executing. BuildUrl=${buildUrl}`);
+      return buildUrl;
     }
 
-    let buildData = await getJobStatus(jobName, buildUrl);
+    if (!buildUrl) {
+      core.info(`>>> Job '${jobName}' is queued (Reason: '${queueData.why}'). Sleeping for ${sleepInterval}s...`);
+      await sleep(sleepInterval);
+      continue;
+    }
+  }
+}
+
+async function waitJenkinsJob(buildUrl) {
+  const sleepInterval = 5;
+  while (true) {
+    let buildData = await getJobStatus(buildUrl);
 
     if (buildData.result == "SUCCESS") {
       core.info(`>>> Job '${buildData.fullDisplayName}' completed successfully!`);
@@ -115,7 +120,6 @@ async function waitJenkinsJob(jobName, queueItemUrl, timestamp) {
 async function main() {
   try {
     let params = {};
-    let startTs = + new Date();
     let jobName = core.getInput('job_name');
     if (core.getInput('parameter')) {
       params = JSON.parse(core.getInput('parameter'));
@@ -126,9 +130,11 @@ async function main() {
 
     core.info(`>>> Job '${jobName}' was queued successfully. QueueUrl=${queueItemUrl}`);
 
+    // Waiting for job to start from queue
+    let buildUrl = await waitJenkinsBuildUrl(jobName, queueItemUrl);
     // Waiting for job completion
     if (core.getInput('wait') == 'true') {
-      await waitJenkinsJob(jobName, queueItemUrl, startTs);
+      await waitJenkinsJob(jobName, buildUrl);
     }
   } catch (err) {
     core.setFailed(err.message);
